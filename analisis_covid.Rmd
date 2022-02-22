@@ -18,7 +18,7 @@ Cargamos los datos que se utilizaran.
 
 library(readr)
 
-counts <- read.csv("C:/Users/Cristopher/Desktop/datos omicos git/covid/analisis omicos/analisis_rna_seq/RawCounts.csv",stringsAsFactors = FALSE)
+counts <- read.csv("datos/RawCounts.csv",stringsAsFactors = FALSE)
 
 ```
 
@@ -307,7 +307,7 @@ Guardamos la tabla de genes
 ```{r, echo=FALSE}
 
 
-write.csv(toptab, file="C:\\Users\\Cristopher\\Desktop\\datos omicos git\\covid\\analisis omicos\\analisis_rna_seq\\topTable.csv")
+write.csv(toptab, file="datos\\topTable.csv")
 
 ```
 
@@ -406,14 +406,6 @@ ego = enrichGO(gene = topGenesBas,
 ```
 
 
-
-```{r, echo=FALSE}
-
-write.table(ego, file="C:\\Users\\Cristopher\\Desktop\\datos omicos git\\covid\\analisis omicos\\analisis_rna_seq\\Enriquecimiento.csv", dec=".", sep=";")
-
-```
-
-
 Un dotplot muestra algunas categorias usando un código de tamaño para el número de genes en la categoría y de color para la significación.
 
 ```{r}
@@ -457,7 +449,7 @@ emapplot(term_similarity_matrix, showCategory = 10,
 creamos pdf
 
 ```{r, echo=FALSE, message=FALSE}
-pdf(file="C:\\Users\\Cristopher\\Desktop\\datos omicos git\\covid\\analisis omicos\\analisis_rna_seq\\enrichmentPlots.pdf")
+pdf(file="datos\\enrichmentPlots.pdf")
 dotplot(ego, showCategory=7)
 cnetplot(ego2, showCategory = 3, cex_category =0.3, 
          cex_label_category =0.7, cex_gene=0.2, cex_label_gene=0.4,
