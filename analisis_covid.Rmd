@@ -1,0 +1,471 @@
+---
+title: "covid"
+author: "Cristopher Valenzuela"
+date: "21 de febrero de 2022"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+
+Este ejercicio realiza un análisis de expresión diferencial, basado en datos de RNA-Seq, para encontrar diferencias en la respuesta inmune entre enfermos graves y severos de COVID-19. Se basa en unos datos de contajes descargados del repositorio Gene Expresión Omnibus y se lleva a cabo con un total de 34 muestras, 17 por grupo, extraídas aleatoriamente de dos grupos (SANO y COVID) cada uno de 17 muestras. 
+
+Este ejercicio tiene un doble objetivo - Implementar y ejecutar un pipeline básico de análisis de datos de RNA-seq, adaptándolo de otros pre-existentes. - Aplicar dicho pipe-line al análisis de unos datos públicos que se proporcionan con este fin. - Un tercer objetivo, que puede considerarse implícito en lo anterior es comunicar el proceso y los resultado siguiendo los estándares habituales de ciencia de datos (R/Rmarkdown).
+
+Cargamos los datos que se utilizaran.
+
+```{r setup, echo=FALSE}
+
+library(readr)
+
+counts <- read.csv("C:/Users/Cristopher/Desktop/datos omicos git/covid/analisis omicos/analisis_rna_seq/RawCounts.csv",stringsAsFactors = FALSE)
+
+```
+
+
+
+
+```{r}
+
+rownames(counts) = counts[,1]
+counts = counts[,-1]
+
+```
+
+Estandarización de los contajes
+}
+Además de filtrar, es bueno expresar los contajes en “CPMs” es decir “counts per million”, lo que no modificará los resultados del filtraje, pero estandarizará los valores, lo que es útil y necesario para los análisis posteriores.
+
+Para la estandarización se utilizará la función cpm() del paquete edgeR.
+
+
+```{r}
+
+#Se estandarizan los datos
+library(edgeR)
+
+counts.CPM <- cpm(counts)
+
+
+```
+
+Una vez los datos estan como CPMs, se procede a filtrarlos
+
+
+Filtraje de genes poco expresados
+
+Los genes con recuentos muy bajos en todas las librerías proporcionan poca evidencia de expresión diferencial por lo que es habitual eliminar aquellos genes que, o bien son poco variables, o bien presentan poca o nula expresión en la mayoría de las muestras.
+
+En este caso, siguiendo las indicaciones proporcionadas, se opta por conservar únicamente aquellos genes que presentan algún valor en, al menos, tres muestras de cada grupo.
+
+```{r}
+thresh <- counts.CPM > 0
+keep <- (rowSums(thresh[,1:17]) >= 3) &
+        (rowSums(thresh[,18:34]) >= 3)
+counts.keep <- counts.CPM[keep,]
+dim(counts.CPM)
+dim(counts.keep)
+
+```
+
+```{r}
+head(counts.CPM)
+head(counts.keep)
+```
+
+creamos el target para nuestros datos
+
+```{r}
+muestras<- colnames(counts)
+grupos <- c(rep("COVID", 17), rep("SANO", 17))
+colores=c(rep("red", 17), rep("blue", 17))
+targets <- data.frame(sample=muestras, 
+                      group=grupos, cols=colores)
+rownames(targets) <- targets[,1]
+```
+
+
+Uso de clases específicas para manejar los datos
+
+Cuando se trabaja con distintos objetos referidos a unos mismos datos, como la matriz de contajes y el objeto “targets”, es útil disponer de clases contenedoras que permitan trabajar con todos ellos a la vez, lo que no sólo facilita el trabajo sino que ayuda a evitar “desincronizaciones”.
+
+Éste es el caso de la clase ExpressionSet habitualmente utilizada con microarrays o de la clase que la generaliza, llamada SummarizedExperiment.
+
+Para datos de contaje es habitual usar una clase similar a ExpressionSet llamada DGEList” pensadas para manejar datos de contajes , definida en el paquete edgeR. Esta clase, más simple que las anteriores, utiliza listas para almacenar recuentos de “reads” e información asociada de tecnologías de secuenciación o expresión génica digital. Puede encontrarse información al respecto en la ayuda del paquete edgeR.
+
+```{r}
+
+dgeObj <- DGEList(counts = counts.keep, 
+                  lib.size = colSums(counts.keep),
+                  norm.factors = rep(1,ncol(counts.keep)), 
+                  samples = targets,
+                  group = targets$group, 
+                  genes = rownames(counts.keep), 
+                  remove.zeros = FALSE)
+dgeObj
+
+```
+
+
+Normalización
+
+Además de estandarizar los contajes, es importante eliminar otros los sesgos de composición entre librerías. Esto puede hacerse aplicando la normalización por el método TMM que genera un conjunto de factores de normalización, donde el producto de estos factores y los tamaños de librería definen el tamaño efectivo de la biblioteca.
+
+La función calcNormFactors, de la librería edgeR, calcula los factores de normalización entre librerías.
+
+Esto no modificará la matriz de contajes, pero actualizará los factores de normalización en el objeto DGEList (sus valores predeterminados son 1).
+
+```{r}
+
+library(edgeR)
+dgeObj_norm <- calcNormFactors(dgeObj)
+
+log2count_norm <- cpm(dgeObj_norm, log=TRUE)
+
+```
+
+
+Exploración de los datos
+
+Una vez descartados los genes poco expresados y con los recuentos almacenados en un objeto DGEList, podemos`proceder a realizar algunos gráficos exploratorios para determinar si los datos aparentan buena calidad y/o si presentan algun problema.
+
+Distribución de los contajes
+
+Un diagrama de cajas con los datos, normalizados o no, muestra que la distribución de los contajes es muy asimétrica, lo que justifica la decisión de trabajar con los logaritmos de los datos.
+
+La transformación logarítmica puede hacerse directamente pero es mejor usar la función cpm, como se ha hecho, que agrega una pequeña cantidad para evitar tomar logaritmos de cero.
+
+```{r}
+
+par(mfrow=c(2,1))
+rawCounts <- dgeObj_norm$counts
+boxplot(rawCounts, ylab="CPM",las=2, xlab="", col = dgeObj$samples$cols, cex.axis=0.7, main="Distribución de contajes")
+boxplot(log2count_norm, ylab="Log2-CPM",las=2, xlab="", col=dgeObj$samples$cols, cex.axis=0.7, main="Distribución de log(contajes)")
+abline(h=median(log2count_norm), col="blue")
+par(mfrow=c(1,1))
+
+```
+
+
+Análisis de similaridad entre las muestras
+
+En general, en un estudio experimental en donde buscamos comparar distintas condiciones o tratamientos, esperaremos que las muestras pertencientes al mismo grupo se parezcan más entre ellas que a las de los otros grupos.
+
+Esta idea intuitiva puede concretarse a través de calcular y visualizar de alguna forma la similaridad entre las muestras.
+
+Esto puede hacerse de distintas formas, pero algunas de las más habituales son, el cluster o agrupamiento jerárquico y los métodos de reducción de la dimensión como el análisis de componentes principales (PCA) o el escalamiento multidimensional (MDS). Éste último tiene la ventaja que permite visualizar en dimensión reducida las similaridades entre muestras, más que los datos directos que es lo que hace el PCA.
+
+ Distancia entre muestras
+
+La función dist permite calcular una matriz de distancias que contiene las comparaciones dos a dos entre todas las muestras. Por defecto se utiliza una distancia euclídea.
+
+```{r}
+
+
+sampleDists <- dist(t(log2count_norm))
+round(sampleDists,1)
+
+
+```
+
+Las matrices de distancias se pueden visualizar directamente con un heatmap
+
+```{r}
+library(factoextra)
+fviz_dist(sampleDists)
+```
+
+
+Agrupamiento jerárquico
+
+Un agrupamiento jerárquico proporciona una representación alternativa, también basada en la matriz de distancias.
+
+```{r}
+
+hc <-hclust(sampleDists)
+plot(hc,labels = colnames(log2count_norm),main = "Agrpamiento jerárquico de las muestras", cex=0.8)
+
+
+```
+
+El dendrograma muestra la misma agrupación, sanos por un lado y COVID por otro, y el mismo comportamiento diferenciado de esta muestra COV155.
+
+Una forma adicional de comprobar que, efectivamente, la mustra “COV155” difiere de las demas es verificar que el factor de normalización de dicha muestra es distinto al de los demás, lo que es coherente con el resto de visualizaciones y sugiere que es preciso un mayor esfuerzo para hacerla similar al resto.
+
+```{r}
+normFactors <- dgeObj_norm$samples$norm.factors
+names(normFactors)<- sampleNames <- rownames(dgeObj_norm$samples)
+plot(normFactors, main= "Factores de normalización")
+text(normFactors, sampleNames, pos=2, cex=0.7)
+```
+
+
+
+Visualización en dimensión reducida
+
+Un enfoque complementario para determinar las principales fuentes de variabilidad en los datos es la visualización en dimensión reducida, ya sea de los datos o de la matriz de similaridades.
+
+Para la primera representación es habitual basarse en el resultado de un análisis de componentes principales (PCA) que representan las direcciones a lo largo de las cuales la variación en la matriz de datos es máxima, con la ventaja de que dichas direcciones son ortogonales (es decir independientes) y que explica cada una más información que la siguiente, por lo que con unas pocas dimensiones se suele poder explicar un alto porcentaje de la variabilidad.
+
+De forma análoga, el escalamiento multidimensional permite llevar a cabo una transformación similar a la del PCA, pero con la matriz de distancias, lo que proporciona una representación en dimensión reducida que describe con relativa fidelidad las diferencias y similaridades entre muestras.
+
+Para esta segunda representación utilizaremos la función plotMDS. Es un poco difícil ver exactamente qué está pasando con la gráfica predeterminada, aunque vemos muestras que se agrupan en pares. Para hacer esta gráfica más informativa, podemos colorear las muestras de acuerdo con la información de agrupación (por ejemplo. Estado):
+
+```{r}
+
+col.status <- dgeObj_norm$samples$cols
+plotMDS(log2count_norm,col=col.status, main="Status", cex=0.7)
+
+
+```
+
+
+En general vemos que las muestras se agrupan naturalmente.
+
+En este caso como no hay covariables no analizamos el efecto de lotes, y la agrupacion natural de las muestras parece ser un ejemplo de esto.
+
+
+Análisis de expresión diferencial
+
+El objetivo del análisis de expresión diferencial es seleccionar genes cuya expresión difiere entre grupos.
+
+Al tratarse de contajes, que no son variables contínuas, la comparación puede llevarse a cabo usando modelos lineales generalizados o extensiones de éstos, creadas específicamente para datos de secuenciación.
+
+Este es el caso específicamente de edgeR o DESEQ2.
+
+Una alternativa a estos paquetes es usar el paquete limma, que ofrece la función voom, que transforma los recuentos de “reads” en logCMM, teniendo en cuenta la relación media-varianza en los datos (Charity W. Law et al. 2014) y permite analizarlos mediante la aproximación habitual basada en modelos lineales.
+
+ Selección de genes usando limma-Voom
+
+La ventaja principal de esta aproximación es que permite trabajar con toda la flexibilidad de los modelos lineales para representar diseños experimentales, y, en muchos casos , aprovechar la experiencia previa del usuario en el manejo de limma.
+
+ Matriz de diseño y de contrastes
+
+Utilizando la variable group podemos definir una matriz de diseño y, sobre ésta, los contrastes que nos interesan.
+
+```{r}
+
+group = as.factor(dgeObj_norm$samples$group)
+design = model.matrix(~ 0 + group)
+colnames(design) = gsub("group", "", colnames(design))
+row.names(design) = sampleNames
+design
+
+
+```
+
+Definimos los contrastes, en este caso tenemos sanos versus covid, asi que sera un solo contraste
+
+```{r}
+cont.matrix = makeContrasts(CONTROLvsCOVID = COVID - SANO,
+levels=colnames(design))
+cont.matrix
+
+```
+
+Transformación de los contajes
+
+Tal como se ha indicado, no es posible aplicar un modelo lineal normal con datos de contajes. la transformación voom creará un nuevo objeto con campos equivalentes a los del DGELIST, en la que los contajes se han transdormado de forma que puedan ser analizados usando modelos lineales. O, mejor dicho, de forma que las inferencias realizadas, usando un modelo lineal normal resulten válidas.
+
+```{r}
+
+voomObj <- voom(dgeObj_norm, design)
+voomObj
+
+
+```
+
+
+Selección de genes diferencialmente expresados
+
+Como en el caso de los microarrays el objeto voomObj y las matrices de diseño y contrastes se utilizaran para ajustar un modelo y, a continuación realizar las comparaciones especificadas sobre el modelo ajustado. El proceso finaliza con la regularización del estimador del error usando la función eBayes.
+
+
+```{r}
+
+fit <- lmFit(voomObj)
+fit.cont <- contrasts.fit(fit, cont.matrix)
+fit.cont <- eBayes(fit.cont)
+
+```
+
+
+Top tables
+
+Los resultados de un análisis de expresión diferencial se pueden extraer con la función topTable. Esta función genera una tabla de resultados cuyas columnas contienen información acerca de los genes y la diferencia entre los grupos comparados.
+
+
+```{r}
+
+toptab <- topTable(fit.cont,coef=1,sort.by="p", number=nrow(fit.cont))
+head(toptab)
+
+```
+
+Guardamos la tabla de genes
+
+```{r, echo=FALSE}
+
+
+write.csv(toptab, file="C:\\Users\\Cristopher\\Desktop\\datos omicos git\\covid\\analisis omicos\\analisis_rna_seq\\topTable.csv")
+
+```
+
+
+Visualización de los resultados
+
+Para visualizar los resultados podemos usar un volcanoPlot
+
+```{r}
+
+volcanoplot(fit.cont,coef=1,highlight=100, main="COVID vs SANO")
+
+```
+
+fijamos un criterio de selección de genes y retenemos aquellos componentes de la tabla de resultados que lo cumplen. Por ejemplo: Genes con un p-balor ajustado inferior a 0.001 y un `fold-change' superior a 2.
+
+```{r}
+
+topGenesBas <- rownames(subset(toptab, (abs(logFC)> 2) & (adj.P.Val < 0.01)))
+length(topGenesBas)
+
+```
+
+
+Con la matriz de expresión de los genes que verifican dicha condición se puede construir un heatmap.
+
+
+```{r}
+library(pheatmap)
+mat  <- log2count_norm[topGenesBas, ]
+mat  <- mat - rowMeans(mat)
+pheatmap(mat)
+```
+
+
+Anotación de resultados y análisis de significación biológica
+
+Para el análisis de significación se utilizan dos listas de transcritos:
+
+La lista de transcritos diferencialmenete expresados
+La lista de tosos los tránscritos o “Universo”
+
+```{r}
+
+universe <- rownames(toptab)
+length(universe)
+```
+
+Anotación de los identificadores
+
+Un detalle importante en los estudios de RNA-seq es que las unidades de expresión suelen ser tránscritos no genes. En la práctica, esto determina que la mayoría de programas de análisis de enriquecimiento pueden perder detalle, porque para su uso se requiere tener los identificadores en formato “gen”, habitualmente ENTREZ o SYMBOL.
+
+Esto es posible, y de hecho sencillo de llevar a cabo, usando el paquete annotate.
+
+
+```{r, message=FALSE}
+library(org.Hs.eg.db)
+AnnotationDbi::keytypes(org.Hs.eg.db)
+topAnots = AnnotationDbi::select(org.Hs.eg.db, topGenesBas, c("SYMBOL", "ENTREZID", "GENENAME"),
+keytype = "ENSEMBL")
+head(topAnots)
+dim(topAnots)
+```
+
+
+Anotacion para el universo
+
+```{r}
+univAnots = AnnotationDbi::select(org.Hs.eg.db, universe, c("SYMBOL", "ENTREZID", "GENENAME"), keytype = "ENSEMBL")
+head(univAnots)
+dim(univAnots)
+```
+
+Análisis de enriquecimiento
+
+El paquete clusterProfiler admite identificadores de tipo ENSEMBL y permite gran variedad de análisis complementarios al enriquecimiento por lo que, es una de las mejores opcionespara el análisis de significación biológica.
+
+En primer lugar se lleva a cabo un Análisis de enriquecimiento con categorias de la ontología “Biological Process” que permite seleccionar aquellas categorías más enriquecidas en la lista de genes diferencialmente expresados.
+
+El objeto resultante del análisis contiene información sobre las categorías enriquecidas, el grado de enriquecimiento, o los genes anotados en las mismas. Este objeto puede salvarse a disco para su posterior consulta.
+
+```{r , message=FALSE}
+
+library(clusterProfiler)
+library(org.Hs.eg.db)
+ego = enrichGO(gene = topGenesBas, 
+               universe=universe,
+               keyType = "ENSEMBL", 
+               OrgDb = org.Hs.eg.db,
+               ont="BP",
+               pAdjustMethod = "BH",
+               pvalueCutoff = 0.05,
+               qvalueCutoff = 0.05,
+               readable = TRUE)
+
+```
+
+
+
+```{r, echo=FALSE}
+
+write.table(ego, file="C:\\Users\\Cristopher\\Desktop\\datos omicos git\\covid\\analisis omicos\\analisis_rna_seq\\Enriquecimiento.csv", dec=".", sep=";")
+
+```
+
+
+Un dotplot muestra algunas categorias usando un código de tamaño para el número de genes en la categoría y de color para la significación.
+
+```{r}
+dotplot(ego, showCategory=7)
+```
+
+
+Un  cnetplot la relación entre genes y categorías enriquecidas.
+
+```{r}
+library(ggplot2)
+ego2 = simplify(ego)
+cnetplot(ego2, showCategory = 3, cex_category =0.3, 
+         cex_label_category =0.7, cex_gene=0.2, cex_label_gene=0.4,
+         circular=TRUE, colorEdge=TRUE)
+```
+
+Un goplot muestra, en forma de subgrafo de la Gene Ontology, las categorías que se relacionan, como ascendientes, con las categorías enriquecidas. Sirve para ver éstas, en contexto.
+
+
+```{r}
+library(enrichplot)
+goplot(ego2, showCategory=5, cex=0.1)
+```
+
+Un heatplot`permite relacionar, de forma similar al cnetplot, las categorías y los genes anotados en ellas. Conceptualmente es interesante, pero la visibilidad es difícil.
+
+```{r}
+heatplot(ego2)
+```
+
+
+Finalmente, dada la abundancia de componentes que aparecen en los análisis, podemos mirar de agruparlos por su similaridad (cercanía dentro del grafo) y así obtener una visualización más compacta.
+
+```{r}
+term_similarity_matrix = pairwise_termsim(ego)
+emapplot(term_similarity_matrix, showCategory = 10,
+         group_category=TRUE, group_legend=TRUE)
+```
+
+creamos pdf
+
+```{r, echo=FALSE, message=FALSE}
+pdf(file="C:\\Users\\Cristopher\\Desktop\\datos omicos git\\covid\\analisis omicos\\analisis_rna_seq\\enrichmentPlots.pdf")
+dotplot(ego, showCategory=7)
+cnetplot(ego2, showCategory = 3, cex_category =0.3, 
+         cex_label_category =0.7, cex_gene=0.2, cex_label_gene=0.4,
+         circular=TRUE, colorEdge=TRUE)
+goplot(ego2, showCategory=10, cex=0.1)
+heatplot(ego2)
+emapplot(term_similarity_matrix, showCategory = 15,
+         group_category=TRUE, group_legend=TRUE)
+dev.off()
+```
+
